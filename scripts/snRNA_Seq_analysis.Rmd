@@ -1,0 +1,585 @@
+---
+title: "single nuclei RNASeq of human adult down sydrome samples:SC22275"
+author: "Miriam Llorian"
+date: "Last update: `r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes                                                                                                                                                        
+output:
+  html_document:
+    theme: sandstone
+    df_print: tibble
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    code_folding: hide
+---
+
+
+```{css setup_css, echo=FALSE}
+body .main-container {
+  max-width: 100%;
+}
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+
+Micaela would like to assess the QC of this sample, as this is a pilot to demonstrate NCBI that she can prepare good quality samples. This is a requirement for them to get human samples from the NCBI sample bank.
+
+
+
+```{r, echo=FALSE,include=FALSE}
+# 
+# ml purge
+# ml Anaconda3/2020.07
+# source activate R-4.1.1
+# R
+# 
+
+# 
+library(Seurat)
+library(dplyr)
+library(knitr)
+library(cowplot)
+library(DT)
+library(ggplot2)
+library(openxlsx)
+library( grid )
+library(tidyverse)
+library(patchwork)
+```
+
+
+
+```{r, echo=FALSE}
+
+projectsDir <- "/camp/stp/babs/working/sopenam/projects/"
+PI <- "tybulewiczv/"
+scientist <- "micaela.sartoretti/"
+project <- "SnRNAseq_of_human_adult_Down_Syndrome_hippocampi-ms358/"
+
+
+design <-read.xlsx( paste0( projectsDir, PI, scientist,project, "docs/", "SC22275.xlsx"), sheet=1, colNames =T, startRow=2)
+rownames(design) <- design$Sample.limsid
+
+#seq.dir <- "/camp/stp/babs/working/sopenam/projects/tybulewiczv/eva.lana-elola/03_scRNASeq_Dyrk1a_dosage/data/runs/"
+seq.dir <-  paste0( projectsDir, PI, scientist,project, "cellranger/")
+resultsDir <- paste0( projectsDir, PI, scientist,project, "analysis_pilot/" )
+
+if(!file.exists(paste0( projectsDir, PI, scientist,project, "results"))){dir.create(paste0( projectsDir, PI, scientist,project, "results"))}
+if(!file.exists(resultsDir )){dir.create(resultsDir)}
+
+#kable(design, caption = "Sample Table")
+```
+
+
+## Sample QC
+
+Cell ranger output (10X software) doesn't produce any warnings/errors.
+
+```{r, echo=FALSE }
+## Here we are reading all samples and creating one sceL object
+## Renamig cells since there are common names
+
+sceL <- sapply( design$Sample.limsid, function( sample.id ) {
+  Res10x_path <- paste0(seq.dir,
+                        sample.id,
+                        "/outs/filtered_feature_bc_matrix/")
+  sce <- Read10X( Res10x_path )
+  sce <- CreateSeuratObject(counts = sce, min.cells = 3, min.features =200, project= "SC2275")
+   sce <- RenameCells( sce, add.cell.id = sample.id)
+  sce@meta.data$Genotype <- design[sample.id,2]
+  sce@meta.data$replicate <- design[sample.id,17]
+  sce[["percent.mt"]] <- PercentageFeatureSet(sce, pattern = "^MT-")
+  sce
+} )
+
+VlnPlot( sceL[[1]], features=c( "percent.mt", "nFeature_RNA", "nCount_RNA"))
+```
+
+
+```{r out.width=c('50%', '50%'), fig.show='hold', message=FALSE, warning=FALSE, eval=FALSE}
+library(tidyverse)
+### Number of features detected per sample
+
+# nFeatures (number genes per cell)
+df <- c()
+nFeatureRNA <-sapply(sceL, function(x){
+  nFeature_RNA <- FetchData( x, vars = "nFeature_RNA")
+  df<- rbind(df,nFeature_RNA)
+  df
+})
+
+d <- data.frame( x= unlist(nFeatureRNA), grp = rep(names(nFeatureRNA), times = sapply(nFeatureRNA,length)))
+d$grp <- gsub(".nFeature_RNA", "", d$grp)
+
+ggplot(d, aes( x=grp, y =x ,color= grp))+ geom_jitter()  + geom_boxplot() +
+   xlab("samples") +
+  ylab("nFeature RNA \n (Genes per Cell)") +
+        theme(axis.text.x = element_text(angle = 45, hjust =1 )) 
+
+
+ggplot(d, aes(x =x, color= grp)) + geom_density() +
+   ylab("Distribution of  nFeature RNA (Genes per cell") + geom_vline(xintercept=1000) +
+          theme(axis.text.x = element_text(angle = 45, hjust =1 )) 
+
+```
+
+
+
+```{r out.width=c('50%', '50%'), fig.show='hold', eval=FALSE}
+### nCounts (counts per gene)
+
+df1 <- c()
+test1 <-sapply(sceL, function(x){
+  nCount_RNA <- FetchData( x, vars = "nCount_RNA")
+  df1<- rbind(df1,nCount_RNA)
+  df1
+})
+
+
+
+d1<- data.frame( x= unlist(test1), grp = rep(names(test1), times = sapply(test1,length)))
+d1$grp <- gsub(".nCount_RNA", "", d1$grp)
+
+ggplot(d1, aes( x=grp, y =x, color= grp))+ geom_jitter()  + 
+  geom_boxplot() +
+   xlab("samples") +
+  ylab("Number Unique reads per cell") + 
+          theme(axis.text.x = element_text(angle = 45, hjust =1 )) 
+
+#ploting density 
+ggplot(d1, aes(x =x, color= grp)) + 
+  geom_density() +
+   ylab("Distribution of  Unique reads per cell") +
+   theme(axis.text.x = element_text(angle = 45, hjust =1 )) 
+
+```
+
+
+
+### Mitochondrial signal {.tabset .tabset-fade}
+
+This is a good way of assessing QC for single cell preparations, as in theory the cytoplasm and mitochondria have been removed. So I'm looking at the percent of mitochondrial expression detected by sequencing. 
+
+The boxplot to the left suggest tha there's a significant proportion of cells with mit gene expression, although is difficult to say. On the right plot, we are looking at the distribution of mitochondrial gene expression, and the vertical bars mark the 0.5% and 1% content. The majority of cells contain < 0.5%. As seen in other papers mit content below 1% is found in other datasets as seen here:  <https://www.nature.com/articles/s41591-020-0844-1.pdf>
+
+
+
+```{r out.width=c('50%', '50%'), fig.show='hold'}
+# percent mit (counts per gene)
+df2 <- c()
+test2 <-sapply(sceL, function(x){
+  percent.mt <- FetchData( x, vars = "percent.mt")
+  df2<- rbind(df2,percent.mt)
+  df2
+})
+
+d2<- data.frame( x= unlist(test2), grp = rep(names(test2), times = sapply(test2,length)))
+d2$grp <- gsub(".percent.mt", "", d2$grp)
+
+ ggplot(d2, aes( x=grp, y =x, color= grp))+ geom_jitter()  + geom_boxplot() +
+   xlab("samples") +
+  ylab("percent mit RNA") +
+   theme(axis.text.x = element_text(angle = 45, hjust =1 ))
+ 
+ 
+  ggplot(d2, aes( x=x, color= grp))+ geom_density() +
+    xlab("percent mit RNA") + 
+    ylab("Density ") +
+    geom_vline( xintercept = 1,linetype="dashed", color = "grey")   + 
+    geom_vline( xintercept = 0.5,linetype="dashed", color = "red") +
+   theme(axis.text.x = element_text(angle = 45, hjust =1 ))
+  
+  ##zoom in to the < 1%
+
+  ggplot(d2, aes( x=x, color= grp))+ geom_density() +
+    xlab("percent mit RNA") + 
+    ylab("Density ") +
+    geom_vline( xintercept = 1,linetype="dashed", color = "grey")   + 
+    geom_vline( xintercept = 0.5,linetype="dashed", color = "red") +
+   theme(axis.text.x = element_text(angle = 45, hjust =1 )) +
+    xlim(0,1.5)
+ 
+
+```
+
+
+
+```{r out.width=c('50%', '50%'), fig.show='hold'}
+fpList <-  lapply(names(sceL), function(sc) {
+  sce <- sceL[[sc]]
+  FeatureScatter(sce, feature1="nFeature_RNA", feature2="percent.mt") + 
+    geom_vline(xintercept=1000) +  
+    geom_hline( yintercept=0.5) 
+  })
+
+names(fpList) <- names(sceL)
+
+```
+
+
+```{r results='asis',echo=FALSE,fig.wigth=12,fig.height=6}
+for( i in names( fpList ) ) {
+    cat( "#### ", i, " \n" )
+    grid.draw( fpList[[ i ]] )
+    cat( " \n\n" )
+}
+```
+
+
+If we compare the number of features detected per cell with the mit content, we can see for both samples that nuclei with high mit content, have very low number of features(genes) detected. The horizontal and vertical lines are highlighting 1000 features on the x-axis, and 0.5% mit content on the y-axis.
+
+
+So essentially we should be able to filter out nuclei with mitochondrial content higher than 1% and that should remove most of very low feature count nuclei.
+
+```{r echo=FALSE, message=FALSE}
+
+sceL <- sapply(sceL, function (x) {
+  
+  sce <- subset( x,  subset = percent.mt < 0.5)
+  sce <- NormalizeData(sce)
+  sce <- FindVariableFeatures(sce, selection.method = "vst", nfeatures = 2000)
+  sce <- ScaleData( sce, features = rownames(sce) )
+  sce
+} ) 
+
+```
+
+
+## Analysis samples separately {.tabset .tabset-fade}
+
+
+```{r echo=FALSE, message=FALSE}
+
+sceL2 <- sapply( sceL, function (x) {
+sce <- RunPCA( x,  features = VariableFeatures( x))
+
+})
+
+## cell cycle scoring
+
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+
+sceL2 <- sapply( sceL2, function (x) {
+sce <- CellCycleScoring( x,  s.features = s.genes, g2m.features = g2m.genes  )
+
+})
+
+```
+
+
+```{r echo=FALSE, message=FALSE, out.width=c('50%', '50%'), fig.show='hold'}
+
+sceL2 <- sapply( sceL2, function (x) {
+
+sce <- JackStraw( x, num.replicate=50, dims=50 )
+sce <- ScoreJackStraw( sce, dims=1:50)
+#print(JackStrawPlot(sce, dims = 1:50))
+#print( ElbowPlot(sce) )
+
+})
+
+sceL2 <- sapply( sceL2, function (x) {
+sce <- FindNeighbors(x, dims = 1:40)
+sce <- FindClusters(sce, resolution = 0.5)
+sce <- RunUMAP( sce, dims = 1:40)
+})
+
+ saveRDS(sceL2, paste0(resultsDir, "sceL2.rds"))
+
+```
+
+
+```{r render_umaps_per_sample,results='asis',echo=FALSE,fig.wigth=12,fig.height=6}
+
+for( i in names( sceL2 ) ) {
+    cat( "### ", i, " \n" )
+     p1 <- DimPlot(sceL2[[ i ]], reduction ="umap")
+    p2 <- DimPlot(sceL2[[ i ]], reduction ="umap", group.by="Phase" )
+   grid.draw( p1 | p2 )
+    cat( " \n\n\n" )
+}
+
+```
+
+
+### Doublet Finder {.tab, .tab-fade}
+
+```{r, doublet_finder, echo=FALSE, message=FALSE, include=FALSE, warning=FALSE}
+
+ library(DoubletFinder)
+
+sceL3 <- sapply( sceL2, function (sce) {
+  ## pK Identification (ground-truth) 
+ sweep.res.sce <- paramSweep_v3(sce, PCs = 1:10, sct = FALSE)
+ gt.calls <- sce@meta.data[rownames(sweep.res.sce[[1]]), "GT"]
+ sweep.res.sce <- summarizeSweep(sweep.res.sce, GT = FALSE)
+ bcmvn_sce <- find.pK(sweep.res.sce)
+
+#write.table(bcmvn_sce, file="./DoubletFinder/doubletFinder_HEW569A17.txt", sep="\t")
+bcmvn_sce
+
+# #create plot
+# plot(x=as.numeric(bcmvn_sce$pK), y=bcmvn_sce$BCmetric, pch=16, col="#41b6c4", cex=0.7,
+# xaxt = "n", xlab="pK", ylab="BCmvn", main="DoubletFinder_HEW569A17")
+# lines(x=bcmvn_sce$pK, y=bcmvn_sce$BCmetric, col="#41b6c4")
+# axis(1, 1:31, bcmvn_sce$pK)
+# abline(v=rownames(bcmvn_sce[bcmvn_sce$BCmetric == max(bcmvn_sce$BCmetric),]) , col="red", lty=2)
+
+## Homotypic Doublet Proportion Estimate
+
+annotations <- sce@meta.data$seurat_clusters
+homotypic.prop <- modelHomotypic(annotations)
+nExp_poi <- round(0.075*length(rownames(sce@meta.data)))  ## Assuming 7.5% doublet formation rate - tailor for your dataset
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+
+##we use the maximum value of pK from the first plot to then call the doublets)
+sce <- doubletFinder_v3(sce, PCs = 1:10, pN = 0.25, pK = 0.03, nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
+
+# png("./DoubletFinder/HEW569A17_doublet_umap_plot.png");
+# DimPlot( sce, reduction = "umap", group.by="DF.classifications_0.25_0.03_159") + ggtitle("DoubletFinder");
+# dev.off();
+sce
+})
+
+ saveRDS(sceL3, paste0(resultsDir, "sceL3.rds"))
+
+```
+
+
+
+```{r, doublet_finder_plots, results='asis',echo=FALSE,fig.wigth=12,fig.height=6 , eval=FALSE}
+
+
+for( i in names( sceL3 ) ) {
+    cat( "#### ", i, " \n" )
+  group <-  names(sceL3[[i]]@meta.data)[ grep("DF.classifications_", names(sceL3[[i]]@meta.data))]
+  grid.draw( DimPlot( sce, reduction = "umap", group.by= group + ggtitle("DoubletFinder") )
+    cat( " \n\n\n" )
+}
+
+
+
+
+```
+
+
+
+Visualize clusters by mit content and n_Features to see if anything stands out:
+
+```{r,message=FALSE, warning=FALSE }
+
+library(viridis)
+plasma <- viridis(10, direction = 1, option = "D")
+
+FeaturePlot( sceL3[[1]], features=c("nFeature_RNA", "percent.mt"),
+             cols= plasma, ncol=2)
+
+VlnPlot( sceL3[[1]], features=c("nFeature_RNA", "percent.mt") )
+
+
+RidgePlot(sceL3[[1]], features="nFeature_RNA", assay="RNA", group.by="Doublets")
+RidgePlot(sceL3[[1]], features="nCount_RNA", assay="RNA", group.by="Doublets")
+
+```
+
+
+At this particular resolution (0.6), there are few clusters that have very low number of genes detected, not sure if this is biology or that's a signal of something going wrong. 
+
+
+### Determine clusters
+
+Use clustree to see how many clusters and how they break down when we increase the resolution. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+library(clustree)
+for (n in c(0.2, 0.4, 0.6, 0.8, 1, 1.2)){
+sceL3[[1]] <- FindClusters(sceL3[[1]], resolution = n, verbose=FALSE)
+}
+
+```
+
+```{r}
+
+clustree( sceL3[[1]], prefix="RNA_snn_res.")
+
+```
+
+
+The tree above, shows how clusters change as we increase the parameter called  "resolution". Below there are heatmaps generated with the top10 gene markers for each resolution, so you can see how things change. Additionally, you are given a document "Cluster_markers.xlsx" that should give cell markers for each cluster at each resolution. That should help you explore your data and determine which cluster resolution best explain the underlying biology. 
+
+
+```{r echo=TRUE, eval=TRUE, warning=FALSE, results=FALSE, eval=FALSE}
+library(limma)
+markersList <- list()
+
+res <- c( 0.2, 0.4, 0.6, 0.8, 1, 1.2)
+
+markersList <- lapply( res, function(n) {
+  
+#changes Idents to match resolution
+Idents(sceL3[[1]]) <- paste0( "RNA_snn_res.", n)
+
+markers <- FindAllMarkers(sceL3[[1]], only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, verbose = F)
+  #save the list of markers in a list
+markers
+ })
+
+
+saveRDS(markersList, paste0( resultsDir, "markersList.rds"))
+##write to file
+ ## save markers at different resolution
+ markersList.wb <- createWorkbook("MarkersList")
+ i <- 0
+ sig.lists <- lapply( markersList, function (res) {
+   i <<- i+1
+   results <- as.data.frame(res)
+   addWorksheet(markersList.wb, sheetName= names(markersList [i]))
+     writeData( markersList.wb, sheet = i, results)
+   results
+ })
+ saveWorkbook(markersList.wb, paste0( resultsDir, "Cluster_markers_diff_resolutions.xlsx"), overwrite = TRUE)
+
+
+```
+
+
+### Identify clusters by know markers
+
+I'm  using a list of markers  provided my Micaela in the past for a previous project, so I'm hoping they will be of some use.
+
+
+```{r out.width=c('50%', '50%'), fig.show='hold', message=FALSE, warning=FALSE}
+toplot <- c("SLC17A7", "PROX1", "PLK5", "GAD2", "SV2B", "RELN", "IGFBPL1", "AQP4", "APBBL1P","MOBP", "PDGFRA")
+
+sce <- sceL3[[1]]
+FeaturePlot( sce, features = toplot)
+
+GABAergic <- list(c("GAD1", "GAD2", "DLX1", "DLX5",  "PVALB", "SST" )) # "Vip", "Pvalb", "Sst"
+    sce <- AddModuleScore(object= sce,
+                                     features=  GABAergic,
+                                     assay= "RNA",
+                                     name= "GABAergic",
+                                     ctrl= length(GABAergic))
+    
+   FeaturePlot(object = sce, 
+                features = "GABAergic1")   
+  # c("Gad1", "Gad2", "Dlx1", "Dlx5", "Vip", "Pvalb", "Sst" ),ncol=2)
+ Glutamatergic <- list(c( "NRN1", "NRGN", "FHL2", "NEUROD2", "SLC17A7" ))
+ sce <- AddModuleScore(object= sce,
+                                     features=  Glutamatergic,
+                                     assay= "RNA",
+                                     name= "Glutamatergic",
+                                     ctrl= length(Glutamatergic))
+    
+   FeaturePlot(object = sce, 
+                features = "Glutamatergic1")   
+ 
+```
+
+
+```{r out.width=c('50%', '50%'), fig.show='hold', message=FALSE, warning=FALSE}
+
+
+Astrocytes <- list(c("AQP4","GJB6", "F3", "GJA1" ))
+    sce <- AddModuleScore(object = sce,
+                                     features=  Astrocytes,
+                                     assay= "RNA",
+                                     name= "Astrocytes",
+                                     ctrl= length(Astrocytes))
+    
+   FeaturePlot(object = sce, 
+                features = "Astrocytes1")   
+   
+ Microglia <- c( "MOG", "CTSS" )
+  sce <- AddModuleScore(object= sce,
+                                     features=  Microglia,
+                                     assay= "RNA",
+                                     name= "Microglia",
+                                     ctrl= length(Microglia))
+    
+   FeaturePlot(object = sce, 
+                features = "Microglia1")   
+ 
+   
+   OPCs <- list(c("PDGFRA", "CSPG4", "OLIG1", "PCDH15"))
+  sce <- AddModuleScore(object= sce,
+                                     features=  OPCs,
+                                     assay= "RNA",
+                                     name= "OPCs",
+                                     ctrl= length(OPCs))
+    
+   FeaturePlot(object = sce, 
+                features = "OPCs1")   
+
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, eval =FALSE}
+
+### Number of cells per genotype
+
+The table below shows number of cells per cluster per genotype at resolution 1.2 without merging
+
+library(tidyr)
+
+cells.per.cluster <-  table(Idents(integrated.data.clstrs), integrated.data.clstrs$Genotype)
+cells.per.cluster <- data.frame( cells.per.cluster)
+
+cells.per.cluster <- spread( cells.per.cluster, Var2, Freq)
+names( cells.per.cluster) <- c( "Cluster", "Dp1Tyb", "WT")
+datatable( cells.per.cluster, rownames=FALSE, options = list(pageLength = 10, scrollX=T))
+
+## this will break it down by replicate
+cells.per.clust.per.replicate <- as.data.frame( table(Idents(integrated.data.clstrs), integrated.data.clstrs$Genotype, integrated.data.clstrs$replicate))
+names(cells.per.clust.per.replicate) <- c( "Cluster", "Genotype", "Replicate", "Counts")
+cells.per.clust.per.replicate$sample.name <- paste(cells.per.clust.per.replicate$Genotype, 
+                                                   cells.per.clust.per.replicate$Replicate,
+                                                   sep="_")
+
+# ## plotting
+# cells.per.clust.per.replicate %>%
+#   ggplot( aes(x=Cluster,y= Counts, fill= sample.name)) +
+#   geom_bar( stat="identity") +
+#   scale_fill_brewer(palette = "Paired")
+# 
+#  
+
+ cells.per.clust.per.replicate <- cells.per.clust.per.replicate[,c(1,4,5)]
+ cells.per.clust.per.replicate <- spread( cells.per.clust.per.replicate, "sample.name", "Counts")
+
+write.table( cells.per.clust.per.replicate, paste0(resultsDir, "CellsperCluster_perReplicate.txt"), row.names = F, quote=F)
+
+# plotting proportions
+rownames(cells.per.clust.per.replicate) <- paste("Cluster", cells.per.clust.per.replicate$Cluster, sep="_")
+cells.per.clust.per.replicate$Cluster <- NULL
+proportion.cell.per.cluster <- cells.per.clust.per.replicate/rowSums(cells.per.clust.per.replicate)
+
+
+proportion.cell.per.cluster  %>%
+  rownames_to_column() %>%
+  pivot_longer( !rowname, names_to = "sample.name", values_to = "Counts") %>% 
+  ggplot( aes(x=rowname,y= Counts, fill= sample.name)) +
+  geom_bar( stat="identity") +
+  scale_fill_brewer(palette = "Paired") +
+   theme(axis.text.x = element_text(angle = 45, hjust =1 ))+
+   scale_x_discrete ( limits= c( paste0( "Cluster_", 0:27)))
+  
+
+
+```
+
+
+### Session Info
+
+```{r echo=FALSE}
+sessionInfo()
+```
